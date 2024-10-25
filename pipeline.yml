@@ -1,0 +1,569 @@
+---
+health_status_notify: &health_status_notify
+  put: health-notification
+
+blocks:
+  docker-creds: &docker-creds
+    username: ((docker_hub_username))
+    password: ((docker_hub_password))
+
+resource_types:
+  - name: http-api
+    type: docker-image
+    source:
+      repository: gdscyber/http-api-resource
+      <<: *docker-creds
+
+resources:
+  - name: health-notification
+    type: http-api
+    source:
+      uri: https://((health_host_prod))/?alert_type=concourse$&alert_name=health
+      method: POST
+      headers:
+        Authorization: "Bearer ((health_token_prod))"
+      json:
+        service: "{service}"
+        state: "{health}"
+        message: "{message}"
+        pipeline: "{BUILD_PIPELINE_NAME}"
+        job: "{BUILD_JOB_NAME}"
+        build_number: "{BUILD_NAME}"
+      service: "Docker Build Pipeline"
+
+  - name: concourse-base-image-pipeline-git
+    type: git
+    source:
+      branch: master
+      paths:
+        - pipeline.yml
+      uri: https://github.com/alphagov/cyber-security-concourse-base-image.git
+
+  - name: concourse-base-image-git
+    type: git
+    source:
+      branch: master
+      paths:
+        - Dockerfile
+      uri: https://github.com/alphagov/cyber-security-concourse-base-image.git
+
+  - name: concourse-base-image-git-amazonlinux2
+    type: git
+    source:
+      branch: master
+      paths:
+        - amazonlinux2/
+      uri: https://github.com/alphagov/cyber-security-concourse-base-image.git
+
+  - name: load-testing-image-git
+    type: git
+    source:
+      branch: master
+      paths:
+        - load_testing/Dockerfile
+      uri: https://github.com/alphagov/cyber-security-concourse-base-image.git
+
+  - name: cloudwatch-health-image-git
+    type: git
+    source:
+      branch: master
+      paths:
+        - docker/concourse-worker-health/Dockerfile
+      uri: https://github.com/alphagov/cyber-security-cloudwatch-config.git
+
+  - name: csls-image-git
+    type: git
+    source:
+      branch: master
+      paths:
+        - config/concourse/Dockerfile
+        - kinesis_processor/Cargo.lock
+        - kinesis_processor/Cargo.toml
+        - kinesis_processor/.cargo/config.toml
+      private_key: ((pipeline-git-priv-key))
+      uri: git@github.com:alphagov/centralised-security-logging-service.git
+
+  - name: http-api-resource-git
+    type: git
+    source:
+      branch: master
+      paths:
+        - docker/http-api-resource/Dockerfile
+      private_key: ((pipeline-git-priv-key))
+      uri: git@github.com:alphagov/cyber-security-cloudwatch-config.git
+
+  - name: cyber-chalice-git
+    type: git
+    source:
+      branch: master
+      paths:
+        - dockerfiles/chalice
+      private_key: ((pipeline-git-priv-key))
+      uri: git@github.com:alphagov/csw-concourse.git
+
+  - name: csw-image-git
+    type: git
+    source:
+      branch: master
+      paths:
+        - dockerfiles/csw
+      private_key: ((pipeline-git-priv-key))
+      uri: git@github.com:alphagov/csw-concourse.git
+
+  - name: concourse-base-image-docker-hub
+    type: registry-image
+    source:
+      <<: *docker-creds
+      repository: gdscyber/cyber-security-concourse-base-image
+      tag: latest
+
+  - name: concourse-base-image-docker-hub-amazonlinux2
+    type: registry-image
+    source:
+      <<: *docker-creds
+      tag: amazonlinux2
+      repository: gdscyber/cyber-security-concourse-base-image
+
+  - name: load-testing-image-docker-hub
+    type: registry-image
+    source:
+      <<: *docker-creds
+      repository: gdscyber/artillery-load-testing
+      tag: latest
+
+  - name: cloudwatch-health-image-docker-hub
+    type: registry-image
+    source:
+      <<: *docker-creds
+      repository: gdscyber/concourse-worker-health
+      tag: latest
+
+  - name: csls-image-docker-hub
+    type: registry-image
+    source:
+      <<: *docker-creds
+      repository: gdscyber/csls-concourse
+      tag: latest
+
+  - name: http-api-resource-image-docker-hub
+    type: registry-image
+    source:
+      <<: *docker-creds
+      repository: gdscyber/http-api-resource
+      tag: latest
+
+  - name: cyber-chalice-image-docker-hub
+    type: registry-image
+    source:
+      <<: *docker-creds
+      repository: gdscyber/cyber-chalice
+      tag: latest
+
+  - name: csw-concourse-worker-image-docker-hub
+    type: registry-image
+    source:
+      <<: *docker-creds
+      repository: gdscyber/csw-concourse-worker
+      tag: latest
+
+jobs:
+  - name: update-pipeline
+    serial: false
+    plan:
+      - get: concourse-base-image-pipeline-git
+        trigger: true
+      - set_pipeline: cyber-security-concourse-base-image
+        file: concourse-base-image-pipeline-git/pipeline.yml
+    on_failure:
+      <<: *health_status_notify
+      params:
+        message: Pipeline update failed
+        health: unhealthy
+
+  - name: build-base-docker-image
+    serial: false
+    plan:
+      - get: concourse-base-image-git
+        trigger: true
+
+      - task: build
+        privileged: true
+        config: &build-image-config
+          platform: linux
+          image_resource:
+            type: registry-image
+            source:
+              repository: vito/oci-build-task
+          params:
+            CONTEXT: concourse-base-image-git/
+          inputs:
+            - name: concourse-base-image-git
+          outputs:
+            - name: image
+          run:
+            path: build
+        on_success:
+          <<: *health_status_notify
+          params:
+            message: "Cyber security concourse base image build completed successfully."
+            health: healthy
+        on_failure:
+          <<: *health_status_notify
+          params:
+            message: "Cyber security concourse base image build failed."
+            health: unhealthy
+
+
+      - put: concourse-base-image-docker-hub
+        params:
+          image: image/image.tar
+        on_success:
+          <<: *health_status_notify
+          params:
+            message: "Cyber security concourse base image Docker Hub upload completed successfully."
+            health: healthy
+        on_failure:
+          <<: *health_status_notify
+          params:
+            message: "Cyber security concourse base image Docker Hub upload failed."
+            health: unhealthy
+
+
+  - name: build-load-testing-docker-image
+    serial: false
+    plan:
+      - get: load-testing-image-git
+        trigger: true
+
+      - get: concourse-base-image-git
+        trigger: true
+        passed:
+          - build-base-docker-image
+
+      - task: build
+        privileged: true
+        config:
+          <<: *build-image-config
+          params:
+            CONTEXT: load-testing-image-git/load_testing
+          inputs:
+            - name: load-testing-image-git
+          outputs:
+            - name: image
+          run:
+            path: build
+        on_success:
+          <<: *health_status_notify
+          params:
+            message: "Load testing image build completed successfully."
+            health: healthy
+        on_failure:
+          <<: *health_status_notify
+          params:
+            message: "Load testing image build failed."
+            health: unhealthy
+
+      - put: load-testing-image-docker-hub
+        params:
+          image: image/image.tar
+        on_success:
+          <<: *health_status_notify
+          params:
+            message: "Load testing image Docker Hub upload completed successfully."
+            health: healthy
+        on_failure:
+          <<: *health_status_notify
+          params:
+            message: "Load testing image Docker Hub upload failed."
+            health: unhealthy
+
+  - name: build-base-docker-image-amazonlinux2
+    serial: false
+    plan:
+      - get: concourse-base-image-git-amazonlinux2
+        trigger: true
+      - task: build
+        privileged: true
+        config:
+          platform: linux
+          image_resource:
+            type: registry-image
+            source:
+              repository: vito/oci-build-task
+          params:
+            CONTEXT: concourse-base-image-git-amazonlinux2/amazonlinux2
+          inputs:
+            - name: concourse-base-image-git-amazonlinux2
+          outputs:
+            - name: image
+          run:
+            path: build
+        on_success:
+          <<: *health_status_notify
+          params:
+            message: "Cyber security concourse base image (Amazon Linux 2) build completed successfully."
+            health: healthy
+        on_failure:
+          <<: *health_status_notify
+          params:
+            message: "Cyber security concourse base image (Amazon Linux 2) build failed."
+            health: unhealthy
+
+
+      - put: concourse-base-image-docker-hub-amazonlinux2
+        params:
+          image: image/image.tar
+        on_success:
+          <<: *health_status_notify
+          params:
+            message: "Cyber security concourse base image (Amazon Linux 2) Docker Hub upload completed successfully."
+            health: healthy
+        on_failure:
+          <<: *health_status_notify
+          params:
+            message: "Cyber security concourse base image (Amazon Linux 2) Docker Hub upload failed."
+            health: unhealthy
+
+  - name: cloudwatch-health-docker-image
+    serial: false
+    plan:
+
+      - get: cloudwatch-health-image-git
+        trigger: true
+
+      - get: concourse-base-image-git
+        trigger: true
+        passed:
+          - build-base-docker-image
+
+      - task: build
+        privileged: true
+        config:
+          <<: *build-image-config
+          params:
+            CONTEXT: cloudwatch-health-image-git/docker/concourse-worker-health/
+          inputs:
+            - name: cloudwatch-health-image-git
+          outputs:
+            - name: image
+          run:
+            path: build
+        on_success:
+          <<: *health_status_notify
+          params:
+            message: "Cloudwatch health image build completed successfully."
+            health: healthy
+        on_failure:
+          <<: *health_status_notify
+          params:
+            message: "Cloudwatch health image build failed."
+            health: unhealthy
+
+      - put: cloudwatch-health-image-docker-hub
+        params:
+          image: image/image.tar
+        on_success:
+          <<: *health_status_notify
+          params:
+            message: "Cloudwatch health image Docker Hub upload completed successfully."
+            health: healthy
+        on_failure:
+          <<: *health_status_notify
+          params:
+            message: "Cloudwatch health image Docker Hub upload failed."
+            health: unhealthy
+
+  - name: csls-docker-image
+    serial: false
+    plan:
+
+      - get: csls-image-git
+        trigger: true
+
+      - get: concourse-base-image-git
+        trigger: true
+        passed:
+          - build-base-docker-image
+
+      - task: build
+        privileged: true
+        config: &build-image-config
+          platform: linux
+          image_resource:
+            type: registry-image
+            source:
+              repository: vito/oci-build-task
+          params:
+            DOCKERFILE: csls-image-git/config/concourse/Dockerfile
+          inputs:
+            - name: csls-image-git
+          outputs:
+            - name: image
+          run:
+            path: build
+        on_success:
+          <<: *health_status_notify
+          params:
+            message: "CSLS image build completed successfully."
+            health: healthy
+        on_failure:
+          <<: *health_status_notify
+          params:
+            message: "CSLS image build failed."
+            health: unhealthy
+
+      - put: csls-image-docker-hub
+        params:
+          image: image/image.tar
+        on_success:
+          <<: *health_status_notify
+          params:
+            message: "CSLS image Docker Hub upload completed successfully."
+            health: healthy
+        on_failure:
+          <<: *health_status_notify
+          params:
+            message: "CSLS image Docker Hub upload failed."
+            health: unhealthy
+
+  - name: build-http-api-resource-docker-image
+    serial: false
+    plan:
+      - get: http-api-resource-git
+        trigger: true
+      - task: build
+        privileged: true
+        config:
+          <<: *build-image-config
+          params:
+            CONTEXT: http-api-resource-git/docker/http-api-resource
+          inputs:
+            - name: http-api-resource-git
+          outputs:
+            - name: image
+          run:
+            path: build
+        on_success:
+          <<: *health_status_notify
+          params:
+            message: "http-api-resource image build completed successfully."
+            health: healthy
+        on_failure:
+          <<: *health_status_notify
+          params:
+            message: "http-api-resource image build failed."
+            health: unhealthy
+
+      - put: http-api-resource-image-docker-hub
+        params:
+          image: image/image.tar
+        on_success:
+          <<: *health_status_notify
+          params:
+            message: "http-api-resource image Docker Hub upload completed successfully."
+            health: healthy
+        on_failure:
+          <<: *health_status_notify
+          params:
+            message: "http-api-resource image Docker Hub upload failed."
+            health: unhealthy
+
+  - name: build-cyber-chalice-docker-image
+    serial: false
+    plan:
+      - get: cyber-chalice-git
+        trigger: true
+
+      - get: concourse-base-image-git
+        trigger: true
+        passed:
+          - build-base-docker-image
+
+      - task: build
+        privileged: true
+        config:
+          <<: *build-image-config
+          params:
+            CONTEXT: cyber-chalice-git/dockerfiles/chalice/
+          inputs:
+            - name: cyber-chalice-git
+          outputs:
+            - name: cyber-chalice-git # For the tags file
+            - name: image
+          run:
+            path: build
+        on_success:
+          <<: *health_status_notify
+          params:
+            message: "cyber-chalice image build completed successfully."
+            health: healthy
+        on_failure:
+          <<: *health_status_notify
+          params:
+            message: "cyber-chalice image build failed."
+            health: unhealthy
+
+      - put: cyber-chalice-image-docker-hub
+        params:
+          image: image/image.tar
+          additional_tags: cyber-chalice-git/dockerfiles/chalice/tags
+        on_success:
+          <<: *health_status_notify
+          params:
+            message: "cyber-chalice image Docker Hub upload completed successfully."
+            health: healthy
+        on_failure:
+          <<: *health_status_notify
+          params:
+            message: "cyber-chalice image Docker Hub upload failed."
+            health: unhealthy
+
+  - name: build-csw-concourse-worker-docker-image
+    serial: false
+    plan:
+      - get: csw-image-git
+        trigger: true
+
+      - get: concourse-base-image-git
+        trigger: true
+        passed:
+          - build-cyber-chalice-docker-image
+
+      - task: build
+        privileged: true
+        config:
+          <<: *build-image-config
+          params:
+            CONTEXT: csw-image-git/dockerfiles/csw/
+          inputs:
+            - name: csw-image-git
+          outputs:
+            - name: cyber-chalice-git # For the tags file
+            - name: image
+          run:
+            path: build
+        on_success:
+          <<: *health_status_notify
+          params:
+            message: "csw-concourse-worker image build completed successfully."
+            health: healthy
+        on_failure:
+          <<: *health_status_notify
+          params:
+            message: "csw-concourse-worker image build failed."
+            health: unhealthy
+
+      - put: csw-concourse-worker-image-docker-hub
+        params:
+          image: image/image.tar
+          additional_tags: csw-image-git/dockerfiles/csw/tags
+        on_success:
+          <<: *health_status_notify
+          params:
+            message: "csw-concourse-worker image Docker Hub upload completed successfully."
+            health: healthy
+        on_failure:
+          <<: *health_status_notify
+          params:
+            message: "csw-concourse-worker image Docker Hub upload failed."
+            health: unhealthy
