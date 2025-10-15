@@ -31,10 +31,12 @@ EOM
 		exit
 else
     call_github_api "/repos/${github_org}/${repo_name}/pulls?state=closed&sort=updated&direction=desc" 1 "closed_pulls.json"
+	cat "closed_pulls.json"
     echo "Get latest merged PR into main/master branch"
     latest_pull=$(jq '[.[] | select(.merged_at != null) | select(.base.ref == "main" or .base.ref == "master")][0] | .number' closed_pulls.json)
     echo "Get list of changed file for PR: $latest_pull"
     call_github_api "/repos/${github_org}/${repo_name}/pulls/${latest_pull}/files" 1 "changed_files.json"
+	cat "changed_files.json"
     files=$(jq '[.[] | .filename]' "changed_files.json")
     echo "Changed files for $repo_name PR:$latest_pull"
     echo $files > $output_file
