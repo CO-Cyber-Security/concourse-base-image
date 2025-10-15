@@ -1,5 +1,5 @@
 module "codebuild-build-container-docker-hub" {
-  source              = "github.com/alphagov/cyber-security-shared-terraform-modules//codebuild/codebuild_build_container_docker_hub"
+  source              = "github.com/CO-Cyber-Security/cyber-security-shared-terraform-modules//codebuild/codebuild_build_container_docker_hub"
   service_role_name   = var.codebuild_service_role_name
   docker_hub_repo     = "gdscyber/cyber-security-cd-base-image"
   build_context       = "."
